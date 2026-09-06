@@ -87,7 +87,18 @@ export async function GET(req: NextRequest) {
             })
         )
 
+        contacts.sort((a, b) => {
+            if (a.online && !b.online) return -1;
+            if (!a.online && b.online) return 1;
+            if (a.unreadCount && !b.unreadCount) return -1;
+            if (!a.unreadCount && b.unreadCount) return 1;
+            return 0;
+        })
+
+        return NextResponse.json(contacts)
+
      } catch (error) {
-      
+        console.error("Error fetching contacts: ", error);
+        return NextResponse.json({ error: "Failed to fetch contacts ", details: error instanceof Error ? error.message : "Unknown error"}, { status: 500 })
      }
 }
