@@ -189,14 +189,87 @@ io.on('connection', (socket) => {
        }
   })
 
+  const deletedFromCloudinary = (message) => {
+      
+  }
+
   socket.on("mark-read", async (userId, contactId) => {
       try {
         
         if (!userId || !contactId) return
 
+        const result = await Message.updateMany({ senderId: contactId, receiverId: userId, read: false }, {
+            $set: {
+                read: true,
+                delivered: true
+            }
+        })
+
+        const readMessages = await Message.find({
+              senderId: contactId,
+              receiverId: userId,
+              read: true
+        }).select('_id').lean()
+
+        const readIdx = readMessages.map((m) => m._id.toString())
+
+        const payload = {
+              userId: userId,
+              contactId: contactId,
+              messages: readIdx
+        }
+
+        // Notify sender so their checkmarks turn blue
+        io.to(`user-${contactId}`).emit('message-read', payload)
+         
+        // Confirmation to reader
+        io.to(`user-${userId}`).emit('message-read', payload)
+
+      } catch (error) {
+        
+         console.error("Error in mark-read socket handler :", error); 
+
+      }
+  })
+
+  socket.on("delete", async (data) => {
+      try {
+        
+        const {messageId, userId, deletedForEveryone} = data
+
+        const message = await Message.findById(messageId)
+        if(!message){
+            socket.emit("delete-error", { error: "Message not found" });
+            return
+        }
+
+        if(message.senderId.toString() !== userId && message.receiverId.toString() !== userId){
+            socket.emit("delete-error", { error: "Not authorized to delete this message" })
+            return
+        }
+
+        let mediaType = "text";
+        if (message.image) mediaType = "image"
+        else if (message.video) mediaType = "video"
+        else if (message.file) mediaType = "file"
+
+        let cloudinaryDeleted = false;
+        const deletionDetails = []
+
+        if(message.imagePublicId){
+             try {
+                const result = await deletedFromCloudinary(message.imagePublicId)
+                cloudinaryDeleted = true;
+                deletionDetails.push({type: "image", publicId: message.imagePublicId, result })
+             } catch (error) {
+                
+             }
+        }
+
       } catch (error) {
         
       }
   })
+
 })
 server.listen(3000);
