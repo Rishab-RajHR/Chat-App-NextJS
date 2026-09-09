@@ -5,6 +5,7 @@ import dotenv from "dotenv"
 import User from "./models/User.js"
 import { send } from "process"
 import Conversation from "./models/Conversation.js"
+import { v2 as cloudinary } from 'cloudinary';
 
 dotenv.config()
 
@@ -12,10 +13,45 @@ const PORT = process.env.PORT || 3004
 const MONGODB_URI = process.env.MONGODB_URI
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3003" 
 
+
 mongoose.connect(MONGODB_URI).then(()=>console.log("MongoDB connected successfully")).catch((err)=> {console.log("Failed to connect MongoDB", err)
   process.exit(1);
 }
 )
+
+cloudinary.config({
+    cloud_name: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+const io = new Server(server, {
+  cors: {
+    origin: "http://localhost:3000",
+    credentials: true,
+  },
+});
+
+const deletedFromCloudinary = (publicId) => {
+     try {
+        if (!publicId) {
+            return { result: "skipped", message: "No pubic id provided" }
+        }
+
+        return new Promise((resolve, reject) => {
+             cloudinary.uploader.destroy(publicId, (error, result) => {
+                  if (error) {
+                     console.error("Cloudinary deletion error :", error);
+                  } else {
+                     resolve(result)
+                  }
+             })
+        })
+     } catch (error) {
+         console.error("Error in deletedFromCloudinary", error);
+         throw error
+     } 
+}
 
 const server = http.createServer()
 
@@ -189,9 +225,7 @@ io.on('connection', (socket) => {
        }
   })
 
-  const deletedFromCloudinary = (message) => {
-      
-  }
+
 
   socket.on("mark-read", async (userId, contactId) => {
       try {
@@ -262,14 +296,119 @@ io.on('connection', (socket) => {
                 cloudinaryDeleted = true;
                 deletionDetails.push({type: "image", publicId: message.imagePublicId, result })
              } catch (error) {
-                
+                 deletionDetails.push({type: "image", error: error.message })
+             }
+        }
+        if(message.videoPublicId){
+             try {
+                const result = await deletedFromCloudinary(message.videoPublicId)
+                cloudinaryDeleted = true;
+                deletionDetails.push({type: "video", publicId: message.videoPublicId, result })
+             } catch (error) {
+                 deletionDetails.push({type: "video", error: error.message })
+             }
+        }
+        if(message.filePublicId){
+             try {
+                const result = await deletedFromCloudinary(message.filePublicId)
+                cloudinaryDeleted = true;
+                deletionDetails.push({type: "file", publicId: message.filePublicId, result })
+             } catch (error) {
+                 deletionDetails.push({type: "file", error: error.message })
              }
         }
 
+        let updatedMessage;
+        if (deletedForEveryone) {
+            let deletedText = "Text message was deleted"
+            if (mediaType === "image") deletedText = "Image was deleted"
+            else if (mediaType === "video") deletedText = "Video was deleted"
+            if (mediaType === "file") deletedText = "File was deleted"
+
+            updatedMessage = await Message.findByIdAndUpdate(messageId, {
+                 deleted: true,
+                 deletedForEveryone: true,
+                 text: deletedText,
+                 image: null,
+                 imagePublicId: null,
+                 video: null,
+                 videoPublicId: null,
+                 file: null,
+                 filePublicId: null,
+                 type: "text"
+            }, {
+               new: true
+            })
+        } else {
+            updatedMessage = new Message.findByIdAndUpdate(messageId, {
+                $addToSet: { deletedFor: userId }
+            }, { new: true })
+        }
+
+          const messageToSend = {
+              ...updatedMessage,
+              _id: updatedMessage._id.toString(),
+              senderId: updatedMessage.senderId.toString(),
+              receiverId: updatedMessage.receiverId.toString(),
+              deleted: updatedMessage.deleted || false,
+              deletedForEveryone: updatedMessage.deletedForEveryone || false,
+              deletedFor: updatedMessage.deletedFor?.map(id => id.toString()) || [],
+              cloudinaryDeleted,
+              deletionDetails,
+              mediaType
+          }
+
+          io.to(`user-${message.senderId.toString()}`).emit("message-deleted",messageToSend)
+          io.to(`user-${message.receiverId.toString()}`).emit("message-deleted",messageToSend)
+
       } catch (error) {
-        
+         console.error("Error deleting message:", error);
+         socket.emit("delete-error", { error: error.message })
       }
   })
 
+  socket.on("disconnect", async () => {
+     try {
+        const userId = socket.userId
+
+        if (userId) {
+            await User.findByIdAndUpdate(userId, {
+                  online: false,
+                  lastSeen: new Date()
+            })
+            io.emit("user-offline", userId)
+            onlineUsers.delete(userId)
+        }
+     } catch (error) {
+        console.error('Socket error for ${socket.id} ', error);
+     }
+  })
+
+  socket.on("error",  (error) => {
+      console.error(`Socket error for ${socket.id} `, error);
+  })  
+
+});
+server.listen(PORT, () => {
+     console.log(`Socket IO Server is running on ${PORT}`);
+     console.log('http://localhost:${PORT}');
+     console.log('http://localhost:${CLIENT_URL}');
+});
+
+process.on("SIGINT", async () => {
+     console.log("Shutting down gracefully");
+     await mongoose.connection.close()
+     server.close(() => {
+        console.log("Server closed");
+        process.exit(0);
+     })
 })
-server.listen(3000);
+
+process.on("SIGTERM", async () => {
+     console.log("Shutting down gracefully");
+     await mongoose.connection.close()
+     server.close(() => {
+          console.log("Server closed");
+          process.exit(0);
+     })
+})
