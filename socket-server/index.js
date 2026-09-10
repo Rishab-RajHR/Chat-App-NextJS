@@ -25,12 +25,7 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-const io = new Server(server, {
-  cors: {
-    origin: "http://localhost:3000",
-    credentials: true,
-  },
-});
+
 
 const deletedFromCloudinary = (publicId) => {
      try {
@@ -55,7 +50,7 @@ const deletedFromCloudinary = (publicId) => {
 
 const server = http.createServer()
 
-const id = new Server(server, {
+const io = new Server(server, {
     cors: {
         origin: CLIENT_URL,
         methods: ["GET","POST"],
